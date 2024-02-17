@@ -11,7 +11,7 @@ use settings::Settings;
 use std::time::Duration;
 use std::{ops::Range, sync::Arc};
 use theme::ThemeSettings;
-use ui::prelude::*;
+use ui::{prelude::*, ToggleButton};
 
 use workspace::{
     item::{Item, ItemEvent},
@@ -19,6 +19,87 @@ use workspace::{
 };
 
 actions!(zed, [Extensions]);
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+enum SortDirection {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+impl SortDirection {
+    pub fn toggle(&self) -> Self {
+        match self {
+            SortDirection::Ascending => SortDirection::Descending,
+            SortDirection::Descending => SortDirection::Ascending,
+        }
+    }
+
+    pub fn icon_name(&self) -> IconName {
+        match self {
+            SortDirection::Ascending => IconName::ChevronDown,
+            SortDirection::Descending => IconName::ChevronUp,
+        }
+    }
+
+    pub fn icon_tooltip(&self) -> Icon {
+        Icon::new(self.icon_name())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortOrder {
+    Alphabetical(SortDirection),
+    DownloadCount(SortDirection),
+    Recent(SortDirection),
+}
+
+impl Default for SortOrder {
+    fn default() -> Self {
+        SortOrder::Recent(SortDirection::default())
+    }
+}
+
+impl SortOrder {
+    pub fn toggle_direction(&self) -> Self {
+        match self {
+            SortOrder::Alphabetical(direction) => SortOrder::Alphabetical(direction.toggle()),
+            SortOrder::DownloadCount(direction) => SortOrder::DownloadCount(direction.toggle()),
+            SortOrder::Recent(direction) => SortOrder::Recent(direction.toggle()),
+        }
+    }
+
+    pub fn cycle_order(&self) -> Self {
+        match self {
+            SortOrder::Alphabetical(_) => SortOrder::DownloadCount(SortDirection::Descending),
+            SortOrder::DownloadCount(_) => SortOrder::Recent(SortDirection::Descending),
+            SortOrder::Recent(_) => SortOrder::Alphabetical(SortDirection::Descending),
+        }
+    }
+
+    pub fn label(&self) -> SharedString {
+        match self {
+            SortOrder::Alphabetical(_) => "Name".into(),
+            SortOrder::DownloadCount(_) => "Downloads".into(),
+            SortOrder::Recent(_) => "Recent".into(),
+        }
+    }
+
+    pub fn tooltip(&self) -> &str {
+        match self {
+            SortOrder::Alphabetical(SortDirection::Ascending) => "Sort by name (A-Z)",
+            SortOrder::Alphabetical(SortDirection::Descending) => "Sort by name (Z-A)",
+            SortOrder::DownloadCount(SortDirection::Ascending) => {
+                "Sort by download count (ascending)"
+            }
+            SortOrder::DownloadCount(SortDirection::Descending) => {
+                "Sort by download count (descending)"
+            }
+            SortOrder::Recent(SortDirection::Ascending) => "Sort by recent (ascending)",
+            SortOrder::Recent(SortDirection::Descending) => "Sort by recent (descending)",
+        }
+    }
+}
 
 pub fn init(cx: &mut AppContext) {
     cx.observe_new_views(move |workspace: &mut Workspace, _cx| {
@@ -203,10 +284,6 @@ impl ExtensionsPage {
                 .p_3()
                 .mt_4()
                 .gap_2()
-                .bg(cx.theme().colors().elevated_surface_background)
-                .border_1()
-                .border_color(cx.theme().colors().border)
-                .rounded_md()
                 .child(
                     h_flex()
                         .justify_between()
@@ -214,13 +291,10 @@ impl ExtensionsPage {
                             h_flex()
                                 .gap_2()
                                 .items_end()
+                                .child(Label::new(extension.name.clone()))
                                 .child(
-                                    Headline::new(extension.name.clone())
-                                        .size(HeadlineSize::Medium),
-                                )
-                                .child(
-                                    Headline::new(format!("v{}", extension.version))
-                                        .size(HeadlineSize::XSmall),
+                                    Label::new(format!("v{}", extension.version))
+                                        .color(Color::Muted),
                                 ),
                         )
                         .child(
@@ -297,11 +371,9 @@ impl ExtensionsPage {
                     .px_2()
                     .py_1()
                     .gap_2()
-                    .border_1()
-                    .border_color(editor_border)
                     .min_w(rems(384. / 16.))
                     .rounded_lg()
-                    .child(Icon::new(IconName::MagnifyingGlass))
+                    .child(Icon::new(IconName::MagnifyingGlass).color(Color::Muted))
                     .child(self.render_text_input(&self.query_editor, cx)),
             )
     }
@@ -329,7 +401,7 @@ impl ExtensionsPage {
         EditorElement::new(
             &editor,
             EditorStyle {
-                background: cx.theme().colors().editor_background,
+                background: gpui::transparent_black(),
                 local_player: cx.theme().players().local(),
                 text: text_style,
                 ..Default::default()
@@ -383,55 +455,96 @@ impl ExtensionsPage {
 
 impl Render for ExtensionsPage {
     fn render(&mut self, cx: &mut gpui::ViewContext<Self>) -> impl IntoElement {
-        v_flex()
-            .size_full()
-            .p_4()
-            .gap_4()
-            .bg(cx.theme().colors().editor_background)
-            .child(
-                h_flex()
-                    .w_full()
-                    .child(Headline::new("Extensions").size(HeadlineSize::XLarge)),
-            )
-            .child(h_flex().w_56().child(self.render_search(cx)))
-            .child(v_flex().size_full().overflow_y_hidden().map(|this| {
-                if self.extensions_entries.is_empty() {
-                    let message = if self.is_fetching_extensions {
-                        "Loading extensions..."
-                    } else if self.search_query(cx).is_some() {
-                        "No extensions that match your search."
-                    } else {
-                        "No extensions."
-                    };
+        let temp_sort_direction = SortDirection::default();
+        let temp_sort_order = SortOrder::Recent(temp_sort_direction);
 
-                    return this.child(Label::new(message));
-                }
+        div().size_full().p_8().child(
+            h_flex()
+                .size_full()
+                .max_w(rems(1200.0 / 16.0))
+                .max_h(rems(800.0 / 16.0))
+                .elevation_3(cx)
+                .gap_px()
+                .child(
+                    v_flex()
+                        .h_full()
+                        .flex_1()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .justify_between()
+                                .child(
+                                    h_flex()
+                                        .p_4()
+                                        .gap_4()
+                                        .child(
+                                            Headline::new("Extensions").size(HeadlineSize::Small),
+                                        )
+                                        .child(
+                                            Button::new(
+                                                "sort-order",
+                                                temp_sort_order.label().clone(),
+                                            )
+                                            .icon_color(Color::Muted)
+                                            .icon(temp_sort_direction.icon_name()),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .p_4()
+                                        .gap_4()
+                                        .child(ToggleButton::new("installed-only", "Installed")),
+                                ),
+                        )
+                        .child(self.render_search(cx).px_4())
+                        .child(v_flex().flex_1().overflow_y_hidden().map(|this| {
+                            if self.extensions_entries.is_empty() {
+                                let message = if self.is_fetching_extensions {
+                                    "Loading extensions..."
+                                } else if self.search_query(cx).is_some() {
+                                    "No extensions that match your search."
+                                } else {
+                                    "No extensions."
+                                };
 
-                this.child(
-                    canvas({
-                        let view = cx.view().clone();
-                        let scroll_handle = self.list.clone();
-                        let item_count = self.extensions_entries.len();
-                        move |bounds, cx| {
-                            uniform_list::<_, Div, _>(
-                                view,
-                                "entries",
-                                item_count,
-                                Self::render_extensions,
+                                return this.child(Label::new(message));
+                            }
+
+                            this.child(
+                                canvas({
+                                    let view = cx.view().clone();
+                                    let scroll_handle = self.list.clone();
+                                    let item_count = self.extensions_entries.len();
+                                    move |bounds, cx| {
+                                        uniform_list::<_, Div, _>(
+                                            view,
+                                            "entries",
+                                            item_count,
+                                            Self::render_extensions,
+                                        )
+                                        .size_full()
+                                        .track_scroll(scroll_handle)
+                                        .into_any_element()
+                                        .draw(
+                                            bounds.origin,
+                                            bounds.size.map(AvailableSpace::Definite),
+                                            cx,
+                                        )
+                                    }
+                                })
+                                .size_full(),
                             )
-                            .size_full()
-                            .track_scroll(scroll_handle)
-                            .into_any_element()
-                            .draw(
-                                bounds.origin,
-                                bounds.size.map(AvailableSpace::Definite),
-                                cx,
-                            )
-                        }
-                    })
-                    .size_full(),
+                        })),
                 )
-            }))
+                .child(
+                    div()
+                        .h_full()
+                        .flex_1()
+                        .p_6()
+                        .bg(cx.theme().colors().title_bar_background)
+                        .child("markdown description"),
+                ),
+        )
     }
 }
 
