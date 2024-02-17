@@ -41,11 +41,16 @@ impl UiTextSize {
 /// The size of a [`Headline`] element
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Default)]
 pub enum HeadlineSize {
+    /// 14px base size (0.88rem)
     XSmall,
+    /// 16px base size (1rem)
     Small,
+    /// 18px base size (1.127rem)
     #[default]
     Medium,
+    /// 20px base size (1.27rem)
     Large,
+    /// 23px base size (1.43rem)
     XLarge,
 }
 
