@@ -1,0 +1,167 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>GPUI Web - Quad Rendering</title>
+        <style>
+            body {
+                margin: 0;
+                padding: 20px;
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+                background: #1e1e1e;
+                color: #d4d4d4;
+            }
+            h1 {
+                color: #4fc3f7;
+                margin-bottom: 20px;
+            }
+            #canvas {
+                border: 1px solid #3e3e3e;
+                background: #2d2d2d;
+                display: block;
+            }
+            #controls {
+                margin-top: 20px;
+            }
+            button {
+                background: #4fc3f7;
+                color: #1e1e1e;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                cursor: pointer;
+                margin-right: 10px;
+            }
+            button:hover {
+                background: #29b6f6;
+            }
+            #status {
+                margin-top: 10px;
+                padding: 10px;
+                background: #2d2d2d;
+                border: 1px solid #3e3e3e;
+                border-radius: 4px;
+                font-family: monospace;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>GPUI Web - Quad Rendering</h1>
+        <canvas id="canvas" width="800" height="600"></canvas>
+
+        <div id="controls">
+            <button id="simple">Simple Quad</button>
+            <button id="rounded">Rounded Quad</button>
+            <button id="bordered">Bordered Quad</button>
+            <button id="complex">Complex Scene</button>
+            <button id="multiple">Multiple Quads</button>
+            <button id="nested">Nested Quads</button>
+            <button id="clear">Clear</button>
+        </div>
+
+        <div id="status">Loading WASM module...</div>
+
+        <script type="module">
+            import init, { QuadDemo } from "./pkg/gpui_web.js";
+
+            async function run() {
+                const status = document.getElementById("status");
+
+                try {
+                    // Initialize the WASM module
+                    await init();
+                    status.textContent = "WASM module loaded successfully";
+
+                    // Create the demo instance
+                    const demo = new QuadDemo("canvas");
+
+                    // Set up canvas size
+                    demo.resize(800, 600);
+
+                    // Wire up buttons
+                    document.getElementById("simple").addEventListener("click", () => {
+                        try {
+                            demo.draw_simple_quad();
+                            status.textContent = "Drew simple quad";
+                        } catch (e) {
+                            status.textContent = `Error: ${e}`;
+                            console.error(e);
+                        }
+                    });
+
+                    document.getElementById("rounded").addEventListener("click", () => {
+                        try {
+                            demo.draw_rounded_quad();
+                            status.textContent = "Drew rounded quad";
+                        } catch (e) {
+                            status.textContent = `Error: ${e}`;
+                            console.error(e);
+                        }
+                    });
+
+                    document.getElementById("bordered").addEventListener("click", () => {
+                        try {
+                            demo.draw_bordered_quad();
+                            status.textContent = "Drew bordered quad";
+                        } catch (e) {
+                            status.textContent = `Error: ${e}`;
+                            console.error(e);
+                        }
+                    });
+
+                    document.getElementById("complex").addEventListener("click", () => {
+                        try {
+                            demo.draw_complex_scene();
+                            status.textContent = "Drew complex scene";
+                        } catch (e) {
+                            status.textContent = `Error: ${e}`;
+                            console.error(e);
+                        }
+                    });
+
+                    document.getElementById("multiple").addEventListener("click", () => {
+                        try {
+                            demo.draw_multiple_quads();
+                            status.textContent = "Drew multiple quads grid";
+                        } catch (e) {
+                            status.textContent = `Error: ${e}`;
+                            console.error(e);
+                        }
+                    });
+
+                    document.getElementById("nested").addEventListener("click", () => {
+                        try {
+                            demo.draw_nested_quads();
+                            status.textContent = "Drew nested quads";
+                        } catch (e) {
+                            status.textContent = `Error: ${e}`;
+                            console.error(e);
+                        }
+                    });
+
+                    document.getElementById("clear").addEventListener("click", () => {
+                        try {
+                            demo.clear();
+                            status.textContent = "Cleared canvas";
+                        } catch (e) {
+                            status.textContent = `Error: ${e}`;
+                            console.error(e);
+                        }
+                    });
+
+                    // Draw initial quad
+                    demo.draw_simple_quad();
+                    status.textContent = "Ready - Click buttons to draw different quads";
+                } catch (error) {
+                    status.textContent = `Failed to load WASM: ${error}`;
+                    console.error("Failed to initialize:", error);
+                }
+            }
+
+            run();
+        </script>
+    </body>
+</html>

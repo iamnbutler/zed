@@ -26,6 +26,8 @@ web-sys = { version = "0.3", features = [
     "Element",
     "HtmlCanvasElement",
     "CanvasRenderingContext2d",
+    "CssStyleDeclaration",
+    "HtmlElement",
     "WebGl2RenderingContext",
     "Window",
     "Performance",
@@ -47,6 +49,7 @@ collections.workspace = true
 # Serialization for worker communication
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde-wasm-bindgen = "0.6"
 postcard = { version = "1.0", features = ["alloc"] }
 
 # Logging and debugging
@@ -62,6 +65,10 @@ wasm-bindgen-test = "0.3"
 
 [[example]]
 name = "executor_demo"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "quad_demo"
 crate-type = ["cdylib"]
 
 [profile.release]

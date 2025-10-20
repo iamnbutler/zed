@@ -28,10 +28,14 @@
 
 use wasm_bindgen::prelude::*;
 
+pub mod demo;
 pub mod executor;
+pub mod renderer;
 
 // Re-export main types for convenient access
+pub use demo::QuadDemo;
 pub use executor::{Task, Timer, WebExecutor, WebSpawner};
+pub use renderer::WebRenderer;
 
 /// Initialize the web platform
 ///
@@ -129,9 +133,8 @@ pub fn is_web() -> bool {
 }
 
 /// Future modules will be added here as we build them out:
-// pub mod window;      // Window management and rendering
+// pub mod window;      // Window management integration
 // pub mod worker_pool; // Web Worker pool for parallelism
-// pub mod renderer;    // Canvas/WebGPU rendering backend
 // pub mod http;        // Fetch API wrapper
 // pub mod storage;     // IndexedDB/LocalStorage wrapper
 // pub mod input;       // Browser input event handling
