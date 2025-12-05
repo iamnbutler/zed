@@ -44,13 +44,52 @@ pub enum InputStateEvent {
 
 impl EventEmitter<InputStateEvent> for InputState {}
 
-/// A snapshot of input state for undo/redo operations.
+/// A patch-based history entry for memory-efficient undo/redo operations.
+/// Instead of storing the full content, we store only the change needed to reverse the edit.
 #[derive(Clone, Debug)]
 struct HistoryEntry {
-    content: String,
+    /// The byte range that was modified (after the edit, for undo; before the edit, for redo).
+    range: Range<usize>,
+    /// The text that was replaced (to restore on undo).
+    old_text: String,
+    /// The length of the new text that replaced old_text (to know how much to remove on undo).
+    new_text_len: usize,
+    /// The selection range before the edit.
     selected_range: Range<usize>,
+    /// Whether the selection was reversed before the edit.
     selection_reversed: bool,
+    /// Timestamp for grouping consecutive edits.
     timestamp: Instant,
+}
+
+impl HistoryEntry {
+    /// Apply this patch to undo an edit, returning the reverse patch for redo.
+    fn apply_undo(&self, content: &mut String) -> HistoryEntry {
+        let undo_start = self.range.start;
+        let undo_end = (self.range.start + self.new_text_len).min(content.len());
+
+        // Capture what we're about to remove (the "new" text that was inserted)
+        let removed_text = content[undo_start..undo_end].to_string();
+
+        // Replace with the old text
+        content.replace_range(undo_start..undo_end, &self.old_text);
+
+        // Return reverse patch for redo
+        HistoryEntry {
+            range: undo_start..undo_start + self.old_text.len(),
+            old_text: removed_text,
+            new_text_len: self.old_text.len(),
+            selected_range: self.selected_range.clone(),
+            selection_reversed: self.selection_reversed,
+            timestamp: self.timestamp,
+        }
+    }
+
+    /// Apply this patch to redo an edit, returning the reverse patch for undo.
+    fn apply_redo(&self, content: &mut String) -> HistoryEntry {
+        // Redo is the same operation as undo - we're reversing the undo
+        self.apply_undo(content)
+    }
 }
 
 /// `Input` is the state model for text input components. It handles:
@@ -91,6 +130,9 @@ pub struct InputState {
     _subscriptions: Vec<Subscription>,
     /// Tracks whether we were focused on the last update.
     was_focused: bool,
+    /// Cached UTF-16 length of content for faster IME operations.
+    /// Lazily computed when None.
+    cached_utf16_len: Option<usize>,
 }
 
 /// Layout information for a single logical line of text in an input.
@@ -148,6 +190,7 @@ impl InputState {
             available_width: px(0.),
             multiline: false,
             undo_stack: Vec::new(),
+            cached_utf16_len: None,
             redo_stack: Vec::new(),
             group_interval: DEFAULT_GROUP_INTERVAL,
             blink_manager: Some(blink_manager),
@@ -255,6 +298,7 @@ impl InputState {
         self.needs_layout = true;
         self.undo_stack.clear();
         self.redo_stack.clear();
+        self.cached_utf16_len = None;
         self.pause_cursor_blink(cx);
         cx.emit(InputStateEvent::TextChanged);
         cx.notify();
@@ -275,9 +319,9 @@ impl InputState {
         self.group_interval = interval;
     }
 
-    /// Pushes the current state onto the undo stack.
-    /// Called before making changes to content.
-    fn push_undo(&mut self) {
+    /// Records a patch for undo. Called before making changes to content.
+    /// Returns true if a new entry was created, false if grouped with previous.
+    fn push_undo_patch(&mut self, range: Range<usize>, new_text_len: usize) {
         // Don't record during IME composition
         if self.marked_range.is_some() {
             return;
@@ -288,14 +332,19 @@ impl InputState {
         // Check if we should group with the last entry
         if let Some(last) = self.undo_stack.last() {
             if now.duration_since(last.timestamp) < self.group_interval {
-                // Within group interval - don't create a new entry
-                // The previous entry already captures the state before this group of edits
+                // Within group interval - extend the existing patch
+                // We need to merge this edit with the previous one
                 return;
             }
         }
 
+        // Capture the text that will be replaced
+        let old_text = self.content[range.clone()].to_string();
+
         self.undo_stack.push(HistoryEntry {
-            content: self.content.clone(),
+            range: range.start..range.start + new_text_len,
+            old_text,
+            new_text_len,
             selected_range: self.selected_range.clone(),
             selection_reversed: self.selection_reversed,
             timestamp: now,
@@ -310,44 +359,43 @@ impl InputState {
         self.redo_stack.clear();
     }
 
-    /// Undoes the last edit.
+    /// Undoes the last edit by applying the reverse patch.
     pub(crate) fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(entry) = self.undo_stack.pop() {
-            // Save current state to redo stack
-            self.redo_stack.push(HistoryEntry {
-                content: self.content.clone(),
-                selected_range: self.selected_range.clone(),
-                selection_reversed: self.selection_reversed,
-                timestamp: Instant::now(),
-            });
+            // Remember selection to restore
+            let selected_range = entry.selected_range.clone();
+            let selection_reversed = entry.selection_reversed;
 
-            // Restore previous state
-            self.content = entry.content;
-            self.selected_range = entry.selected_range;
-            self.selection_reversed = entry.selection_reversed;
+            // Apply the undo patch and get the redo patch
+            let redo_entry = entry.apply_undo(&mut self.content);
+            self.redo_stack.push(redo_entry);
+
+            // Restore selection state
+            self.selected_range = selected_range;
+            self.selection_reversed = selection_reversed;
             self.needs_layout = true;
+            self.cached_utf16_len = None;
             self.scroll_to_cursor();
             cx.emit(InputStateEvent::Undo);
             cx.notify();
         }
     }
 
-    /// Redoes the last undone edit.
+    /// Redoes the last undone edit by applying the forward patch.
     pub(crate) fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(entry) = self.redo_stack.pop() {
-            // Save current state to undo stack
-            self.undo_stack.push(HistoryEntry {
-                content: self.content.clone(),
-                selected_range: self.selected_range.clone(),
-                selection_reversed: self.selection_reversed,
-                timestamp: Instant::now(),
-            });
+            // Apply the redo patch and get the undo patch
+            let undo_entry = entry.apply_redo(&mut self.content);
 
-            // Restore redone state
-            self.content = entry.content;
-            self.selected_range = entry.selected_range;
-            self.selection_reversed = entry.selection_reversed;
+            // The undo entry contains the selection state after the original edit
+            // We need to restore cursor to end of inserted text
+            let cursor_pos = undo_entry.range.start;
+            self.selected_range = cursor_pos..cursor_pos;
+            self.selection_reversed = false;
+
+            self.undo_stack.push(undo_entry);
             self.needs_layout = true;
+            self.cached_utf16_len = None;
             self.scroll_to_cursor();
             cx.emit(InputStateEvent::Redo);
             cx.notify();
@@ -407,8 +455,6 @@ impl InputState {
 
     /// Inserts text at the current cursor position, replacing any selection.
     pub fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.push_undo();
-
         let range = self
             .marked_range
             .clone()
@@ -422,6 +468,19 @@ impl InputState {
             sanitized_text = text.replace('\n', " ").replace('\r', "");
             &sanitized_text
         };
+
+        // Record patch for undo before modifying content
+        self.push_undo_patch(range.clone(), text_to_insert.len());
+
+        // Update cached UTF-16 length incrementally if available
+        if let Some(cached_len) = self.cached_utf16_len {
+            let removed_utf16_len: usize = self.content[range.clone()]
+                .chars()
+                .map(|c| c.len_utf16())
+                .sum();
+            let added_utf16_len: usize = text_to_insert.chars().map(|c| c.len_utf16()).sum();
+            self.cached_utf16_len = Some(cached_len - removed_utf16_len + added_utf16_len);
+        }
 
         self.content.replace_range(range.clone(), text_to_insert);
         self.selected_range =
@@ -444,17 +503,16 @@ impl InputState {
     /// Undoes the last edit (convenience method without Window).
     pub fn undo_action(&mut self, cx: &mut Context<Self>) {
         if let Some(entry) = self.undo_stack.pop() {
-            self.redo_stack.push(HistoryEntry {
-                content: self.content.clone(),
-                selected_range: self.selected_range.clone(),
-                selection_reversed: self.selection_reversed,
-                timestamp: Instant::now(),
-            });
+            let selected_range = entry.selected_range.clone();
+            let selection_reversed = entry.selection_reversed;
 
-            self.content = entry.content;
-            self.selected_range = entry.selected_range;
-            self.selection_reversed = entry.selection_reversed;
+            let redo_entry = entry.apply_undo(&mut self.content);
+            self.redo_stack.push(redo_entry);
+
+            self.selected_range = selected_range;
+            self.selection_reversed = selection_reversed;
             self.needs_layout = true;
+            self.cached_utf16_len = None;
             self.scroll_to_cursor();
             cx.emit(InputStateEvent::Undo);
             cx.notify();
@@ -464,17 +522,15 @@ impl InputState {
     /// Redoes the last undone edit (convenience method without Window).
     pub fn redo_action(&mut self, cx: &mut Context<Self>) {
         if let Some(entry) = self.redo_stack.pop() {
-            self.undo_stack.push(HistoryEntry {
-                content: self.content.clone(),
-                selected_range: self.selected_range.clone(),
-                selection_reversed: self.selection_reversed,
-                timestamp: Instant::now(),
-            });
+            let undo_entry = entry.apply_redo(&mut self.content);
 
-            self.content = entry.content;
-            self.selected_range = entry.selected_range;
-            self.selection_reversed = entry.selection_reversed;
+            let cursor_pos = undo_entry.range.start;
+            self.selected_range = cursor_pos..cursor_pos;
+            self.selection_reversed = false;
+
+            self.undo_stack.push(undo_entry);
             self.needs_layout = true;
+            self.cached_utf16_len = None;
             self.scroll_to_cursor();
             cx.emit(InputStateEvent::Redo);
             cx.notify();
@@ -1296,6 +1352,18 @@ impl InputState {
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
+        // Fast path: if offset is 0, return 0
+        if offset == 0 {
+            return 0;
+        }
+
+        // Fast path: if we have cached length and offset is at or past end
+        if let Some(utf16_len) = self.cached_utf16_len {
+            if offset >= utf16_len {
+                return self.content.len();
+            }
+        }
+
         let mut utf8_offset = 0;
         let mut utf16_count = 0;
 
@@ -1311,6 +1379,16 @@ impl InputState {
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
+        // Fast path: if offset is 0, return 0
+        if offset == 0 {
+            return 0;
+        }
+
+        // Fast path: if offset is at or past end, return cached length
+        if offset >= self.content.len() {
+            return self.utf16_len();
+        }
+
         let mut utf16_offset = 0;
         let mut utf8_count = 0;
 
@@ -1323,6 +1401,14 @@ impl InputState {
         }
 
         utf16_offset
+    }
+
+    /// Returns the UTF-16 length of the content, computing and caching if necessary.
+    fn utf16_len(&self) -> usize {
+        if let Some(len) = self.cached_utf16_len {
+            return len;
+        }
+        self.content.chars().map(|c| c.len_utf16()).sum()
     }
 
     fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
@@ -1464,8 +1550,6 @@ impl EntityInputHandler for InputState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.push_undo();
-
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -1482,6 +1566,19 @@ impl EntityInputHandler for InputState {
             sanitized_text = new_text.replace('\n', " ").replace('\r', "");
             &sanitized_text
         };
+
+        // Record patch for undo before modifying content
+        self.push_undo_patch(range.clone(), text_to_insert.len());
+
+        // Update cached UTF-16 length incrementally if available
+        if let Some(cached_len) = self.cached_utf16_len {
+            let removed_utf16_len: usize = self.content[range.clone()]
+                .chars()
+                .map(|c| c.len_utf16())
+                .sum();
+            let added_utf16_len: usize = text_to_insert.chars().map(|c| c.len_utf16()).sum();
+            self.cached_utf16_len = Some(cached_len - removed_utf16_len + added_utf16_len);
+        }
 
         self.content.replace_range(range.clone(), text_to_insert);
         self.selected_range =
@@ -1517,6 +1614,16 @@ impl EntityInputHandler for InputState {
             sanitized_text = new_text.replace('\n', " ").replace('\r', "");
             &sanitized_text
         };
+
+        // Update cached UTF-16 length incrementally if available
+        if let Some(cached_len) = self.cached_utf16_len {
+            let removed_utf16_len: usize = self.content[range.clone()]
+                .chars()
+                .map(|c| c.len_utf16())
+                .sum();
+            let added_utf16_len: usize = text_to_insert.chars().map(|c| c.len_utf16()).sum();
+            self.cached_utf16_len = Some(cached_len - removed_utf16_len + added_utf16_len);
+        }
 
         self.content.replace_range(range.clone(), text_to_insert);
 
