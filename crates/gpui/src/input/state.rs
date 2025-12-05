@@ -1395,8 +1395,7 @@ impl EntityInputHandler for InputState {
             &sanitized_text
         };
 
-        self.content =
-            self.content[0..range.start].to_owned() + text_to_insert + &self.content[range.end..];
+        self.content.replace_range(range.clone(), text_to_insert);
         self.selected_range =
             range.start + text_to_insert.len()..range.start + text_to_insert.len();
         self.marked_range.take();
@@ -1431,8 +1430,7 @@ impl EntityInputHandler for InputState {
             &sanitized_text
         };
 
-        self.content =
-            self.content[0..range.start].to_owned() + text_to_insert + &self.content[range.end..];
+        self.content.replace_range(range.clone(), text_to_insert);
 
         if !text_to_insert.is_empty() {
             self.marked_range = Some(range.start..range.start + text_to_insert.len());
