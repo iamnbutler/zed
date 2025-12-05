@@ -246,6 +246,7 @@ windows-registry = "0.5"
 [dev-dependencies]
 backtrace.workspace = true
 collections = { workspace = true, features = ["test-support"] }
+criterion.workspace = true
 env_logger.workspace = true
 http_client = { workspace = true, features = ["test-support"] }
 lyon = { version = "1.0", features = ["extra"] }
@@ -335,3 +336,7 @@ path = "examples/window_shadow.rs"
 [[example]]
 name = "grid_layout"
 path = "examples/grid_layout.rs"
+
+[[bench]]
+name = "input_benchmark"
+harness = false

@@ -393,6 +393,94 @@ impl InputState {
         self.marked_range.as_ref()
     }
 
+    /// Sets the selection range directly.
+    pub fn set_selected_range(&mut self, range: Range<usize>) {
+        let range = range.start.min(self.content.len())..range.end.min(self.content.len());
+        self.selected_range = range;
+        self.selection_reversed = false;
+    }
+
+    /// Returns the selected text range in UTF-16 offsets (for IME).
+    pub fn selected_text_range_utf16(&self) -> Range<usize> {
+        self.range_to_utf16(&self.selected_range)
+    }
+
+    /// Inserts text at the current cursor position, replacing any selection.
+    pub fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.push_undo();
+
+        let range = self
+            .marked_range
+            .clone()
+            .unwrap_or(self.selected_range.clone());
+        let range = range.start.min(self.content.len())..range.end.min(self.content.len());
+
+        let sanitized_text;
+        let text_to_insert = if self.multiline {
+            text
+        } else {
+            sanitized_text = text.replace('\n', " ").replace('\r', "");
+            &sanitized_text
+        };
+
+        self.content.replace_range(range.clone(), text_to_insert);
+        self.selected_range =
+            range.start + text_to_insert.len()..range.start + text_to_insert.len();
+        self.marked_range.take();
+        self.needs_layout = true;
+        self.pause_cursor_blink(cx);
+        cx.emit(InputStateEvent::TextChanged);
+        cx.notify();
+    }
+
+    /// Deletes the character before the cursor (convenience method for benchmarks).
+    pub fn delete_backward(&mut self, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.previous_boundary(self.cursor_offset()), cx);
+        }
+        self.insert_text("", cx);
+    }
+
+    /// Undoes the last edit (convenience method without Window).
+    pub fn undo_action(&mut self, cx: &mut Context<Self>) {
+        if let Some(entry) = self.undo_stack.pop() {
+            self.redo_stack.push(HistoryEntry {
+                content: self.content.clone(),
+                selected_range: self.selected_range.clone(),
+                selection_reversed: self.selection_reversed,
+                timestamp: Instant::now(),
+            });
+
+            self.content = entry.content;
+            self.selected_range = entry.selected_range;
+            self.selection_reversed = entry.selection_reversed;
+            self.needs_layout = true;
+            self.scroll_to_cursor();
+            cx.emit(InputStateEvent::Undo);
+            cx.notify();
+        }
+    }
+
+    /// Redoes the last undone edit (convenience method without Window).
+    pub fn redo_action(&mut self, cx: &mut Context<Self>) {
+        if let Some(entry) = self.redo_stack.pop() {
+            self.undo_stack.push(HistoryEntry {
+                content: self.content.clone(),
+                selected_range: self.selected_range.clone(),
+                selection_reversed: self.selection_reversed,
+                timestamp: Instant::now(),
+            });
+
+            self.content = entry.content;
+            self.selected_range = entry.selected_range;
+            self.selection_reversed = entry.selection_reversed;
+            self.needs_layout = true;
+            self.scroll_to_cursor();
+            cx.emit(InputStateEvent::Redo);
+            cx.notify();
+        }
+    }
+
     /// Selects all text.
     pub fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.selected_range = 0..self.content.len();
